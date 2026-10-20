@@ -39,6 +39,12 @@ class FormulaSyntaxError(ValueError):
     pass
 
 
+class FormulaLimitError(ValueError):
+    """Ввод не проверен из-за ограничения ресурсов, а не ошибки ППФ."""
+
+
+MAX_INPUT_LENGTH = 20000
+MAX_FORMULA_DEPTH = 100
 TOKEN_RE = re.compile(r"[A-Za-z][A-Za-z0-9_]*|[()⊃]")
 
 
@@ -54,6 +60,10 @@ def normalize(text: str) -> str:
 
 
 def tokenize(text: str) -> list[str]:
+    if len(text) > MAX_INPUT_LENGTH:
+        raise FormulaLimitError(
+            f"Превышен лимит длины ввода ({MAX_INPUT_LENGTH} символов)."
+        )
     text = normalize(text)
     tokens: list[str] = []
     pos = 0
@@ -94,6 +104,7 @@ class Parser:
     def __init__(self, tokens: list[str]):
         self.tokens = tokens
         self.pos = 0
+        self.nesting = 0
 
     def current(self) -> Optional[str]:
         if self.pos >= len(self.tokens):
@@ -118,9 +129,15 @@ class Parser:
             raise FormulaSyntaxError("Ожидалась формула, но строка закончилась.")
 
         if token == "(":
+            if self.nesting >= MAX_FORMULA_DEPTH:
+                raise FormulaLimitError(
+                    f"Превышен лимит вложенности скобок ({MAX_FORMULA_DEPTH})."
+                )
             self.take("(")
+            self.nesting += 1
             formula = self.parse_expression()
             self.take(")")
+            self.nesting -= 1
             return formula
 
         if token in {"⊃", ")"}:
@@ -145,6 +162,17 @@ class Parser:
         if self.current() is not None:
             tail = " ".join(self.tokens[self.pos :])
             raise FormulaSyntaxError(f"Лишняя часть выражения: '{tail}'.")
+
+        # Цепочка без скобок тоже может создать слишком глубокое дерево.
+        pending = [(result, 0)]
+        while pending:
+            node, depth = pending.pop()
+            if depth > MAX_FORMULA_DEPTH:
+                raise FormulaLimitError(
+                    f"Превышен лимит глубины дерева ({MAX_FORMULA_DEPTH})."
+                )
+            if isinstance(node, Implication):
+                pending.extend([(node.left, depth + 1), (node.right, depth + 1)])
 
         return result
 
@@ -273,10 +301,10 @@ class ProofVerifier:
         # По условию лабораторной доступны аксиомы и предыдущие формулы.
         # Новая проверяемая формула ещё не входит в источники вывода.
         axioms = [
-            SourceRef(formula, f"аксиома {name}") for name, formula in self.axioms
+            SourceRef(formula, f"аксиомы {name}") for name, formula in self.axioms
         ]
         previous_lines = [
-            SourceRef(line.formula, f"строка {line.number}") for line in self.proof
+            SourceRef(line.formula, f"строки {line.number}") for line in self.proof
         ]
         return axioms + previous_lines
 
@@ -328,6 +356,8 @@ class ProofVerifier:
     def verify(self, text: str) -> tuple[bool, str]:
         try:
             formula = parse_formula(text)
+        except FormulaLimitError as error:
+            return False, f"Формула не проверена: {error} Упростите ввод."
         except FormulaSyntaxError as error:
             return False, f"Ошибка: строка не является ППФ. {error}"
 
@@ -340,7 +370,7 @@ class ProofVerifier:
             reason = f"аксиома {axiom_name}"
             self._append(formula, reason)
             return True, (
-                f"Формула {formula_to_string(formula)} является {reason} "
+                f"Формула {formula_to_string(formula)} является аксиомой {axiom_name} "
                 "и добавлена в список выведенных формул."
             )
 
@@ -379,10 +409,31 @@ class ProofVerifier:
                 "Формула добавлена в список выведенных формул."
             )
 
+        missing = []
+        for source in self.all_sources():
+            candidate = source.formula
+            if isinstance(candidate, Implication) and candidate.right == formula:
+                antecedent = formula_to_string(candidate.left)
+                if antecedent not in missing:
+                    missing.append(antecedent)
+
+        if len(missing) == 1:
+            mp_detail = f"Для modus ponens не хватает посылки {missing[0]}."
+        elif missing:
+            mp_detail = (
+                "Для modus ponens нужна хотя бы одна из недостающих посылок: "
+                + "; ".join(missing) + "."
+            )
+        else:
+            mp_detail = (
+                "Для modus ponens нет доступной импликации с заключением "
+                f"{formula_to_string(formula)}."
+            )
         return False, (
-            f"Формула {formula_to_string(formula)} является ППФ, но на текущем шаге "
-            "не выводится ни как аксиома, ни по modus ponens, ни одной β-подстановкой "
-            "из доступных формул."
+            f"Формула {formula_to_string(formula)} является ППФ. "
+            "Недостаточно данных для принятия этого шага: формула не совпадает "
+            "с аксиомами и не получается одной β-подстановкой из доступных формул. "
+            + mp_detail
         )
 
     def _append(self, formula: Formula, reason: str) -> None:
@@ -436,6 +487,9 @@ HELP = """Команды:
 Без скобок импликации группируются слева: p⊃q⊃r = (p⊃q)⊃r.
 Для группировки справа используйте скобки: p⊃(q⊃r).
 Аксиомы доступны для MP и β с начала сеанса.
+Проверяется только один шаг, а не существование полного доказательства.
+Повтор формулы не добавляет строку. clear удаляет ранее введённые шаги.
+Лимиты: 20000 символов, 100 уровней скобок и 100 уровней дерева.
 """
 
 

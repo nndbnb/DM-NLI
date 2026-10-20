@@ -1,7 +1,11 @@
 import unittest
+from itertools import product
 
 from lab1_variant1 import (
     FormulaSyntaxError,
+    FormulaLimitError,
+    FalseConst,
+    Variable,
     ProofVerifier,
     find_beta,
     formula_to_string,
@@ -118,7 +122,7 @@ class VerifierTests(unittest.TestCase):
         ok, msg = verifier.verify("r⊃(q⊃r)")
         self.assertTrue(ok)
         self.assertIn("β", msg)
-        self.assertIn("аксиома A1", verifier.proof[0].reason)
+        self.assertIn("аксиомы A1", verifier.proof[0].reason)
 
     def test_mp_can_use_axiom_without_explicit_input(self):
         verifier = ProofVerifier()
@@ -127,7 +131,7 @@ class VerifierTests(unittest.TestCase):
         ok, msg = verifier.verify("q⊃(p⊃(q⊃p))")
         self.assertTrue(ok)
         self.assertIn("modus ponens", msg)
-        self.assertIn("аксиома A1", verifier.proof[1].reason)
+        self.assertIn("аксиомы A1", verifier.proof[1].reason)
         self.assertEqual(len(verifier.proof), 2)
 
     def test_mp_requires_both_premises(self):
@@ -168,6 +172,77 @@ class VerifierTests(unittest.TestCase):
         ok, msg = verifier.verify("p")
         self.assertFalse(ok)
         self.assertIn("является ППФ", msg)
+
+
+class DiagnosticAndLimitTests(unittest.TestCase):
+    def test_missing_mp_antecedent_is_named(self):
+        verifier = ProofVerifier()
+        ok, message = verifier.verify("q⊃p")
+        self.assertFalse(ok)
+        self.assertIn("не хватает посылки p.", message)
+        self.assertEqual(verifier.proof, [])
+
+    def test_missing_mp_implication_is_reported(self):
+        ok, message = ProofVerifier().verify("s⊃s")
+        self.assertFalse(ok)
+        self.assertIn("нет доступной импликации с заключением s⊃s.", message)
+
+    def test_nesting_limit_boundary_is_valid(self):
+        self.assertEqual(parse_formula("(" * 100 + "p" + ")" * 100), parse_formula("p"))
+
+    def test_tree_depth_boundary_is_valid(self):
+        self.assertIsNotNone(parse_formula("⊃".join(["p"] * 101)))
+
+    def test_extreme_nesting_is_controlled(self):
+        verifier = ProofVerifier()
+        ok, message = verifier.verify("(" * 600 + "p" + ")" * 600)
+        self.assertFalse(ok)
+        self.assertIn("Формула не проверена:", message)
+        self.assertNotIn("не является ППФ", message)
+        self.assertEqual(verifier.proof, [])
+        self.assertTrue(verifier.verify("r⊃(q⊃r)")[0])
+
+    def test_long_unparenthesized_chain_is_controlled(self):
+        with self.assertRaises(FormulaLimitError):
+            parse_formula("⊃".join(["p"] * 1000))
+
+    def test_input_length_limit_is_controlled(self):
+        with self.assertRaises(FormulaLimitError):
+            parse_formula("p" * 20001)
+        # Ровно 20000 символов допустимы как один идентификатор.
+        self.assertEqual(parse_formula("p" * 20000), Variable("p" * 20000))
+
+    def test_limit_does_not_change_existing_history(self):
+        verifier = ProofVerifier()
+        verifier.verify("r⊃(q⊃r)")
+        before = verifier.proof.copy()
+        self.assertFalse(verifier.verify("p" * 20001)[0])
+        self.assertEqual(verifier.proof, before)
+
+
+class SemanticTests(unittest.TestCase):
+    def test_accepted_small_formulas_are_tautologies(self):
+        # Независимая семантическая проверка правильности принятых формул.
+        # Не требует принятия всех тавтологий: это верификатор одного шага.
+        def evaluate(formula, values):
+            if isinstance(formula, Variable):
+                return values[formula.name]
+            if isinstance(formula, FalseConst):
+                return False
+            return not evaluate(formula.left, values) or evaluate(formula.right, values)
+
+        atoms = ["p", "q", "f"]
+        level_one = atoms + [f"({a}⊃{b})" for a in atoms for b in atoms]
+        formulas = set(atoms + [f"({a}⊃{b})" for a in level_one for b in level_one])
+        self.assertEqual(len(formulas), 147)
+        verifier = ProofVerifier()
+        for text in sorted(formulas):
+            with self.subTest(formula=text):
+                ok, _ = verifier.verify(text)
+                if ok:
+                    formula = parse_formula(text)
+                    for p, q in product([False, True], repeat=2):
+                        self.assertTrue(evaluate(formula, {"p": p, "q": q}))
 
 
 if __name__ == "__main__":
