@@ -1,151 +1,43 @@
-"""Синтаксис и семантика классической логики, K3 и L3. Только стандартная библиотека."""
+"""Семантическое расширение ЛР1. AST, парсер и схемы импортируются из lab1."""
 
 from dataclasses import dataclass
 from fractions import Fraction
 from itertools import product
+from pathlib import Path
 import re
-from typing import Mapping, Optional
+import sys
+from typing import Mapping
 
+
+# Поддерживается запуск python lab2/lab2_variant1.py из любого каталога.
+# Здесь подключается исходный модуль ЛР1, копии его кода в ЛР2 нет.
+LAB1_DIRECTORY = Path(__file__).resolve().parents[1] / "lab1"
+if str(LAB1_DIRECTORY) not in sys.path:
+    sys.path.insert(0, str(LAB1_DIRECTORY))
+
+import lab1_variant1 as foundation
+from lab1_variant1 import (
+    Variable, FalseConst, Implication, Negation, Conjunction, Disjunction,
+    Formula as Node, FormulaError as LogicError, FormulaSyntaxError,
+    FormulaLimitError, Parser, ProofVerifier, match_axiom_schema,
+    MAX_INPUT_LENGTH, MAX_FORMULA_DEPTH, variables_in,
+)
 
 ZERO, HALF, ONE = Fraction(0), Fraction(1, 2), Fraction(1)
-MAX_INPUT_LENGTH = 10000
-MAX_DEPTH = 80
+MAX_DEPTH = MAX_FORMULA_DEPTH
 MAX_ROWS = 100000
 
 
-class LogicError(ValueError):
-    """Ошибка ввода или ограничение размера задачи."""
-
-
-class FormulaSyntaxError(LogicError):
-    pass
-
-
-@dataclass(frozen=True)
-class Node:
-    kind: str
-    name: str = ""
-    left: Optional["Node"] = None
-    right: Optional["Node"] = None
-
-
-TOKEN = re.compile(r"[A-Za-z][A-Za-z0-9_]*|[()¬∧∨→]")
-ALIASES = (("->", "→"), ("=>", "→"), ("⊃", "→"), ("⇒", "→"),
-           ("&&", "∧"), ("||", "∨"), ("&", "∧"), ("|", "∨"),
-           ("!", "¬"), ("~", "¬"))
-
-
-def tokenize(text: str) -> list[str]:
-    if len(text) > MAX_INPUT_LENGTH:
-        raise LogicError(f"Формула не проверена: больше {MAX_INPUT_LENGTH} символов.")
-    for old, new in ALIASES:
-        text = text.replace(old, new)
-    tokens, pos = [], 0
-    while pos < len(text):
-        if text[pos].isspace():
-            pos += 1
-            continue
-        match = TOKEN.match(text, pos)
-        if not match:
-            raise FormulaSyntaxError(f"Недопустимый символ {text[pos]!r}, позиция {pos + 1}.")
-        tokens.append(match.group())
-        pos = match.end()
-    if not tokens:
-        raise FormulaSyntaxError("Пустая строка не является формулой.")
-    return tokens
-
-
-class Parser:
-    """Приоритеты: ¬ > ∧ > ∨ > →. Цепочки → группируются слева, как в ЛР1."""
-
-    def __init__(self, text: str):
-        self.tokens = tokenize(text)
-        self.pos = 0
-        self.nesting = 0
-
-    def current(self):
-        return self.tokens[self.pos] if self.pos < len(self.tokens) else None
-
-    def take(self, expected=None):
-        token = self.current()
-        if token is None:
-            raise FormulaSyntaxError("Неожиданный конец формулы.")
-        if expected is not None and token != expected:
-            raise FormulaSyntaxError(f"Ожидалось {expected!r}, получено {token!r}.")
-        self.pos += 1
-        return token
-
-    def binary(self, operand, token, kind):
-        result = operand()
-        while self.current() == token:
-            self.take()
-            result = Node(kind, left=result, right=operand())
-        return result
-
-    def implication(self):
-        return self.binary(self.disjunction, "→", "imp")
-
-    def disjunction(self):
-        return self.binary(self.conjunction, "∨", "or")
-
-    def conjunction(self):
-        return self.binary(self.unary, "∧", "and")
-
-    def unary(self):
-        token = self.current()
-        if token in ("¬", "("):
-            self.nesting += 1
-            if self.nesting > MAX_DEPTH:
-                raise LogicError(f"Формула не проверена: больше {MAX_DEPTH} уровней вложенности.")
-            self.take()
-            if token == "¬":
-                result = Node("not", left=self.unary())
-            else:
-                result = self.implication()
-                self.take(")")
-            self.nesting -= 1
-            return result
-        if token is None or token in ("∧", "∨", "→", ")"):
-            raise FormulaSyntaxError(f"Ожидалась переменная, отрицание или скобка; получено {token!r}.")
-        return Node("var", name=self.take())
-
-    def parse(self):
-        result = self.implication()
-        if self.current() is not None:
-            raise FormulaSyntaxError(f"Лишняя часть выражения: {' '.join(self.tokens[self.pos:])}.")
-        pending = [(result, 0)]
-        while pending:
-            node, depth = pending.pop()
-            if depth > MAX_DEPTH:
-                raise LogicError(f"Формула не проверена: глубина дерева больше {MAX_DEPTH}.")
-            for child in (node.left, node.right):
-                if child is not None:
-                    pending.append((child, depth + 1))
-        return result
-
-
 def parse_formula(text: str) -> Node:
-    return Parser(text).parse()
+    return foundation.parse_formula(text, extended=True)
 
 
 def variables(formula: Node) -> tuple[str, ...]:
-    names, pending = set(), [formula]
-    while pending:
-        node = pending.pop()
-        if node.kind == "var":
-            names.add(node.name)
-        pending.extend(child for child in (node.left, node.right) if child is not None)
-    return tuple(sorted(names))
+    return tuple(sorted(variables_in(formula)))
 
 
 def format_formula(formula: Node, nested=False) -> str:
-    if formula.kind == "var":
-        return formula.name
-    if formula.kind == "not":
-        return "¬" + format_formula(formula.left, True)
-    symbol = {"and": "∧", "or": "∨", "imp": "→"}[formula.kind]
-    text = format_formula(formula.left, True) + symbol + format_formula(formula.right, True)
-    return "(" + text + ")" if nested else text
+    return foundation.formula_to_string(formula, nested).replace("⊃", "→")
 
 
 def format_value(value: Fraction) -> str:
@@ -219,14 +111,17 @@ def validate_assignment(formula, assignment, system):
 
 
 def _evaluate(formula: Node, assignment: Mapping[str, Fraction], system: LogicSystem):
-    if formula.kind == "var":
+    if isinstance(formula, Variable):
         return assignment[formula.name]
+    if isinstance(formula, FalseConst):
+        return ZERO
+    if isinstance(formula, Negation):
+        return system.negate(_evaluate(formula.operand, assignment, system))
     left = _evaluate(formula.left, assignment, system)
-    if formula.kind == "not":
-        return system.negate(left)
     right = _evaluate(formula.right, assignment, system)
-    operation = {"and": system.conjunction, "or": system.disjunction, "imp": system.implication}
-    return operation[formula.kind](left, right)
+    operation = {Conjunction: system.conjunction, Disjunction: system.disjunction,
+                 Implication: system.implication}
+    return operation[type(formula)](left, right)
 
 
 def evaluate(formula, assignment, system):

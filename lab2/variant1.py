@@ -1,6 +1,7 @@
 """Примеры варианта 1 и формирование воспроизводимого отчёта."""
 
-from logic import SYSTEMS, check_entailment, compare, format_value, parse_formula
+from logic import (SYSTEMS, ProofVerifier, analyze, check_entailment, compare,
+                   format_formula, format_value, parse_formula)
 
 
 FORMULAS = {
@@ -58,6 +59,18 @@ def render_report():
         "программа отдельно сообщает, что посылки несовместимы.\n",
         "Порядок перебора: имена переменных по алфавиту, значения по возрастанию. "
         "В качестве примера или контрпримера приводится первая подходящая оценка.\n",
+        "## Основа из ЛР1\n",
+        "ЛР2 импортирует исходный модуль lab1/lab1_variant1.py. Используются его AST, "
+        "расширенный режим парсера, обход дерева, форматирование и ProofVerifier со схемами аксиом. "
+        "Ниже схемы получены непосредственно из ProofVerifier, без повторного задания. "
+        "Константа f имеет значение 0 во всех трёх системах и не входит в список переменных.\n",
+        "Принадлежность к схеме аксиомы ЛР1 проверяется синтаксически. "
+        "Её общезначимость в K3 или L3 исследуется отдельно по соответствующей семантике.\n",
+    ]
+    for name, formula in ProofVerifier().axioms:
+        out += [f"### Схема {name} из ЛР1\n", f"`{format_formula(formula)}`\n",
+                table(PROPERTY_HEADERS, property_rows([analyze(formula, s) for s in systems], systems)), ""]
+    out += [
         "## Задание 1. Формулы\n",
     ]
     for label, text in FORMULAS.items():

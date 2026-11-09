@@ -26,8 +26,34 @@ class Implication:
     right: "Formula"
 
 
-Formula = Union[Variable, FalseConst, Implication]
+@dataclass(frozen=True)
+class Negation:
+    operand: "Formula"
+
+
+@dataclass(frozen=True)
+class Conjunction:
+    left: "Formula"
+    right: "Formula"
+
+
+@dataclass(frozen=True)
+class Disjunction:
+    left: "Formula"
+    right: "Formula"
+
+
+Formula = Union[Variable, FalseConst, Implication, Negation, Conjunction, Disjunction]
 FALSE = FalseConst()
+
+
+def formula_children(formula: Formula) -> tuple[Formula, ...]:
+    """Общий обход AST для парсера, схем аксиом, β и семантики ЛР2."""
+    if isinstance(formula, (Variable, FalseConst)):
+        return ()
+    if isinstance(formula, Negation):
+        return (formula.operand,)
+    return (formula.left, formula.right)
 
 
 # ============================================================
@@ -35,36 +61,46 @@ FALSE = FalseConst()
 # ============================================================
 
 
-class FormulaSyntaxError(ValueError):
+class FormulaError(ValueError):
+    """Общая ошибка формул для обеих лабораторных."""
+
+
+class FormulaSyntaxError(FormulaError):
     pass
 
 
-class FormulaLimitError(ValueError):
+class FormulaLimitError(FormulaError):
     """Ввод не проверен из-за ограничения ресурсов, а не ошибки ППФ."""
 
 
 MAX_INPUT_LENGTH = 20000
 MAX_FORMULA_DEPTH = 100
 TOKEN_RE = re.compile(r"[A-Za-z][A-Za-z0-9_]*|[()⊃]")
+EXTENDED_TOKEN_RE = re.compile(r"[A-Za-z][A-Za-z0-9_]*|[()⊃¬∧∨]")
 
 
-def normalize(text: str) -> str:
+def normalize(text: str, extended: bool = False) -> str:
     """Разрешаем несколько удобных записей импликации."""
-    return (
+    result = (
         text.strip()
         .replace("→", "⊃")
         .replace("⇒", "⊃")
         .replace("=>", "⊃")
         .replace("->", "⊃")
     )
+    if extended:
+        for old, new in (("&&", "∧"), ("||", "∨"), ("&", "∧"), ("|", "∨"), ("!", "¬"), ("~", "¬")):
+            result = result.replace(old, new)
+    return result
 
 
-def tokenize(text: str) -> list[str]:
+def tokenize(text: str, extended: bool = False) -> list[str]:
     if len(text) > MAX_INPUT_LENGTH:
         raise FormulaLimitError(
             f"Превышен лимит длины ввода ({MAX_INPUT_LENGTH} символов)."
         )
-    text = normalize(text)
+    text = normalize(text, extended)
+    token_re = EXTENDED_TOKEN_RE if extended else TOKEN_RE
     tokens: list[str] = []
     pos = 0
 
@@ -73,11 +109,13 @@ def tokenize(text: str) -> list[str]:
             pos += 1
             continue
 
-        match = TOKEN_RE.match(text, pos)
+        match = token_re.match(text, pos)
         if match is None:
+            allowed = ("В расширенном режиме разрешены переменные, f, скобки, ¬, ∧, ∨ и ⊃ (или ->)."
+                       if extended else "Для варианта 1 разрешены переменные, f, скобки и импликация ⊃ (или ->).")
             raise FormulaSyntaxError(
                 f"Недопустимый символ '{text[pos]}' в позиции {pos + 1}. "
-                "Для варианта 1 разрешены переменные, f, скобки и импликация ⊃ (или ->)."
+                + allowed
             )
 
         tokens.append(match.group(0))
@@ -99,12 +137,15 @@ class Parser:
     Согласно слайду 16 лекции 1, цепочки импликаций разбираются слева:
         p⊃q⊃r = (p⊃q)⊃r
     Скобки позволяют задать другую группировку: p⊃(q⊃r).
+    Для ЛР2 extended=True добавляет приоритеты ¬ > ∧ > ∨ > ⊃.
+    По умолчанию сохраняется язык варианта 1 ЛР1: только импликация и f.
     """
 
-    def __init__(self, tokens: list[str]):
+    def __init__(self, tokens: list[str], extended: bool = False):
         self.tokens = tokens
         self.pos = 0
         self.nesting = 0
+        self.extended = extended
 
     def current(self) -> Optional[str]:
         if self.pos >= len(self.tokens):
@@ -140,7 +181,7 @@ class Parser:
             self.nesting -= 1
             return formula
 
-        if token in {"⊃", ")"}:
+        if token in {"⊃", ")", "¬", "∧", "∨"}:
             raise FormulaSyntaxError(f"Ожидалась формула, получен символ '{token}'.")
 
         name = self.take()
@@ -149,13 +190,41 @@ class Parser:
         return Variable(name)
 
     def parse_expression(self) -> Formula:
-        result = self.parse_parenthesized_or_atom()
+        operand = self.parse_disjunction if self.extended else self.parse_parenthesized_or_atom
+        result = operand()
         # Каждый следующий антецедент - вся уже разобранная левая часть.
         while self.current() == "⊃":
             self.take("⊃")
-            right = self.parse_parenthesized_or_atom()
+            right = operand()
             result = Implication(result, right)
         return result
+
+    def parse_disjunction(self) -> Formula:
+        result = self.parse_conjunction()
+        while self.current() == "∨":
+            self.take("∨")
+            result = Disjunction(result, self.parse_conjunction())
+        return result
+
+    def parse_conjunction(self) -> Formula:
+        result = self.parse_unary()
+        while self.current() == "∧":
+            self.take("∧")
+            result = Conjunction(result, self.parse_unary())
+        return result
+
+    def parse_unary(self) -> Formula:
+        if self.current() == "¬":
+            if self.nesting >= MAX_FORMULA_DEPTH:
+                raise FormulaLimitError(
+                    f"Превышен лимит вложенности операций ({MAX_FORMULA_DEPTH})."
+                )
+            self.take("¬")
+            self.nesting += 1
+            result = Negation(self.parse_unary())
+            self.nesting -= 1
+            return result
+        return self.parse_parenthesized_or_atom()
 
     def parse(self) -> Formula:
         result = self.parse_expression()
@@ -171,14 +240,13 @@ class Parser:
                 raise FormulaLimitError(
                     f"Превышен лимит глубины дерева ({MAX_FORMULA_DEPTH})."
                 )
-            if isinstance(node, Implication):
-                pending.extend([(node.left, depth + 1), (node.right, depth + 1)])
+            pending.extend((child, depth + 1) for child in formula_children(node))
 
         return result
 
 
-def parse_formula(text: str) -> Formula:
-    return Parser(tokenize(text)).parse()
+def parse_formula(text: str, extended: bool = False) -> Formula:
+    return Parser(tokenize(text, extended), extended).parse()
 
 
 # ============================================================
@@ -191,10 +259,13 @@ def formula_to_string(formula: Formula, nested: bool = False) -> str:
         return formula.name
     if isinstance(formula, FalseConst):
         return "f"
+    if isinstance(formula, Negation):
+        return "¬" + formula_to_string(formula.operand, nested=True)
 
     left = formula_to_string(formula.left, nested=True)
     right = formula_to_string(formula.right, nested=True)
-    text = f"{left}⊃{right}"
+    symbol = {Implication: "⊃", Conjunction: "∧", Disjunction: "∨"}[type(formula)]
+    text = f"{left}{symbol}{right}"
     return f"({text})" if nested else text
 
 
@@ -208,7 +279,7 @@ def variables_in(formula: Formula) -> set[str]:
         return {formula.name}
     if isinstance(formula, FalseConst):
         return set()
-    return variables_in(formula.left) | variables_in(formula.right)
+    return set().union(*(variables_in(child) for child in formula_children(formula)))
 
 
 def try_beta_for_variable(
@@ -241,10 +312,7 @@ def try_beta_for_variable(
         if isinstance(src, FalseConst):
             return True
 
-        # Здесь обе формулы -- Implication.
-        assert isinstance(src, Implication)
-        assert isinstance(dst, Implication)
-        return match(src.left, dst.left) and match(src.right, dst.right)
+        return all(match(a, b) for a, b in zip(formula_children(src), formula_children(dst)))
 
     if variable not in variables_in(source):
         return None
@@ -269,7 +337,40 @@ def find_beta(source: Formula, target: Formula) -> Optional[tuple[str, Formula]]
 
 
 # ============================================================
-# 5. Верификатор доказательства
+# 5. Сопоставление со схемой аксиомы
+# ============================================================
+
+
+def match_axiom_schema(
+    schema: Formula, formula: Formula
+) -> Optional[dict[str, Formula]]:
+    """Сопоставляет маски схемы с целыми поддеревьями проверяемой формулы.
+
+    Разные маски независимы и могут совпадать друг с другом. Все вхождения
+    одной маски обязаны соответствовать одному и тому же дереву. Имена
+    переменных внутри найденного дерева не интерпретируются повторно.
+    Константа f и узлы импликации самой схемы остаются фиксированными.
+    Это распознавание экземпляра схемы, а не шаг β-подстановки.
+    """
+    bindings: dict[str, Formula] = {}
+
+    def match(pattern: Formula, target: Formula) -> bool:
+        if isinstance(pattern, Variable):
+            if pattern.name not in bindings:
+                bindings[pattern.name] = target
+                return True
+            return bindings[pattern.name] == target
+        if isinstance(pattern, FalseConst):
+            return isinstance(target, FalseConst)
+        if type(pattern) is not type(target):
+            return False
+        return all(match(a, b) for a, b in zip(formula_children(pattern), formula_children(target)))
+
+    return bindings if match(schema, formula) else None
+
+
+# ============================================================
+# 6. Верификатор доказательства
 # ============================================================
 
 
@@ -288,7 +389,7 @@ class ProofLine:
 
 class ProofVerifier:
     def __init__(self) -> None:
-        # Вариант 1 из задания.
+        # Схемы аксиом варианта 1. Их переменные являются масками поддеревьев.
         self.axioms: list[tuple[str, Formula]] = [
             ("A1", parse_formula("p⊃(q⊃p)")),
             ("A2", parse_formula("(s⊃(p⊃q))⊃((s⊃p)⊃(s⊃q))")),
@@ -310,7 +411,7 @@ class ProofVerifier:
 
     def find_axiom(self, formula: Formula) -> Optional[str]:
         for name, axiom in self.axioms:
-            if formula == axiom:
+            if match_axiom_schema(axiom, formula) is not None:
                 return name
         return None
 
@@ -370,7 +471,7 @@ class ProofVerifier:
             reason = f"аксиома {axiom_name}"
             self._append(formula, reason)
             return True, (
-                f"Формула {formula_to_string(formula)} является аксиомой {axiom_name} "
+                f"Формула {formula_to_string(formula)} является экземпляром схемы аксиомы {axiom_name} "
                 "и добавлена в список выведенных формул."
             )
 
@@ -431,8 +532,8 @@ class ProofVerifier:
             )
         return False, (
             f"Формула {formula_to_string(formula)} является ППФ. "
-            "Недостаточно данных для принятия этого шага: формула не совпадает "
-            "с аксиомами и не получается одной β-подстановкой из доступных формул. "
+            "Недостаточно данных для принятия этого шага: формула не является "
+            "экземпляром схем аксиом и не получается одной β-подстановкой из доступных формул. "
             + mp_detail
         )
 
@@ -442,7 +543,7 @@ class ProofVerifier:
         )
 
     def show_axioms(self) -> str:
-        lines = ["Аксиомы варианта 1:"]
+        lines = ["Схемы аксиом варианта 1 (переменные — маски поддеревьев):"]
         for name, formula in self.axioms:
             lines.append(f"  {name}: {formula_to_string(formula)}")
         return "\n".join(lines)
@@ -463,12 +564,12 @@ class ProofVerifier:
 
 
 # ============================================================
-# 6. Консольный интерфейс
+# 7. Консольный интерфейс
 # ============================================================
 
 
 HELP = """Команды:
-  axioms  - показать аксиомы варианта 1
+  axioms  - показать схемы аксиом варианта 1
   list    - показать уже выведенные формулы
   clear   - очистить текущий сеанс доказательства
   help    - показать эту справку
@@ -487,6 +588,9 @@ HELP = """Команды:
 Без скобок импликации группируются слева: p⊃q⊃r = (p⊃q)⊃r.
 Для группировки справа используйте скобки: p⊃(q⊃r).
 Аксиомы доступны для MP и β с начала сеанса.
+Переменные в схемах аксиом — маски для произвольных поддеревьев.
+Повтор одной маски требует одинакового дерева. Константа f не является маской.
+Соответствие схеме аксиомы проверяется раньше MP и β.
 Проверяется только один шаг, а не существование полного доказательства.
 Повтор формулы не добавляет строку. clear удаляет ранее введённые шаги.
 Лимиты: 20000 символов, 100 уровней скобок и 100 уровней дерева.

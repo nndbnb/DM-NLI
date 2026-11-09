@@ -25,8 +25,10 @@ class ParserTests(unittest.TestCase):
     def test_repeated_variables_and_identifiers(self):
         self.assertEqual(variables(parse_formula("p1∧p1∨q_2")), ("p1", "q_2"))
 
-    def test_f_is_a_variable_in_lab2(self):
-        self.assertEqual(evaluate(parse_formula("f"), {"f": ONE}, get_logic("C2")), ONE)
+    def test_f_is_the_shared_false_constant(self):
+        self.assertEqual(variables(parse_formula("f")), ())
+        for code in ("C2", "K3", "L3"):
+            self.assertEqual(evaluate(parse_formula("f"), {}, get_logic(code)), ZERO)
 
     def test_print_round_trip(self):
         for text in [*FORMULAS.values(), "¬¬p", "¬(p∨q)", "p→q→r", "(p)"]:
@@ -41,7 +43,7 @@ class ParserTests(unittest.TestCase):
                     parse_formula(text)
 
     def test_resource_limits(self):
-        for text in ["("*1000+"p"+")"*1000, "¬"*1000+"p", "→".join(["p"]*200), "p"*10001]:
+        for text in ["("*1000+"p"+")"*1000, "¬"*1000+"p", "→".join(["p"]*200), "p"*20001]:
             with self.subTest(length=len(text)):
                 with self.assertRaises(LogicError):
                     parse_formula(text)
@@ -263,6 +265,8 @@ class VariantTests(unittest.TestCase):
 
     def test_report_has_all_examples_and_full_tables(self):
         report = render_report()
+        for name in ("A1", "A2", "A3"):
+            self.assertIn("### Схема " + name + " из ЛР1", report)
         for name in [*FORMULAS, *RELATIONS]:
             self.assertIn("### " + name, report)
         self.assertIn("p=1/2, q=1/2, r=1/2, s=1/2, t=1/2, u=1/2", report)

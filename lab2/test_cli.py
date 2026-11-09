@@ -99,6 +99,28 @@ class ConsoleTests(unittest.TestCase):
         self.assertIn("F5:",r.stdout)
         self.assertIn("R4:",r.stdout)
 
+    def test_constant_without_variable_assignments(self):
+        r = run("eval", "f", "--logic", "L3")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertIn("f = 0", r.stdout)
+
+    def test_axioms_command(self):
+        r = run("axioms")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertIn("ProofVerifier ЛР1", r.stdout)
+        self.assertIn("A1: p→(q→p)", r.stdout)
+        self.assertIn("A3: ((p→f)→f)→p", r.stdout)
+
+    def test_table_recognizes_shared_axiom_schema(self):
+        r = run("table", "(a & b) -> (!c -> (a & b))", "--logic", "C2")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertIn("Экземпляр схемы аксиомы ЛР1: A1.", r.stdout)
+
+    def test_interactive_axioms_mode(self):
+        r = run(stdin="6\n0\n")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertIn("ProofVerifier ЛР1", r.stdout)
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

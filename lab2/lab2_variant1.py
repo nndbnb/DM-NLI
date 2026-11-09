@@ -6,7 +6,7 @@ import sys
 
 from logic import (LogicError, SYSTEMS, analyze, check_entailment, compare,
                    evaluate, format_formula, format_value, get_logic,
-                   parse_assignments, parse_formula, validate_assignment)
+                   parse_assignments, parse_formula, validate_assignment, ProofVerifier)
 from variant1 import (FORMULAS, RELATIONS, PROPERTY_HEADERS, assignment_text,
                       property_rows, render_report, table, yes)
 
@@ -14,6 +14,9 @@ from variant1 import (FORMULAS, RELATIONS, PROPERTY_HEADERS, assignment_text,
 def show_analysis(formula, system):
     analysis = analyze(formula, system)
     print(f"Формула: {format_formula(formula)}; логика: {system.code}.")
+    axiom = ProofVerifier().find_axiom(formula)
+    if axiom is not None:
+        print(f"Экземпляр схемы аксиомы ЛР1: {axiom}.")
     print(table(list(analysis.names) + ["F"],
                 [list(map(format_value, row.values)) + [format_value(row.result)] for row in analysis.rows]))
     print(table(PROPERTY_HEADERS, property_rows([analysis], [system])))
@@ -92,11 +95,19 @@ def show_variant():
             show_entailment(tuple(map(parse_formula, premises)), parse_formula(conclusion), system)
 
 
+def show_axioms():
+    print("Схемы аксиом взяты непосредственно из ProofVerifier ЛР1.")
+    print("Распознавание схемы ЛР1 не означает общезначимость в каждой многозначной логике.")
+    for name, formula in ProofVerifier().axioms:
+        print(f"\n{name}: {format_formula(formula)}")
+        show_comparison(formula, tuple(SYSTEMS.values()))
+
+
 def interactive():
     print("ЛР2, вариант 1. Интерпретатор C2, K3, L3.")
     print("Логики: C2 — классическая; K3 — Клини; L3 — Лукасевича.")
     while True:
-        print("\n1 — значение; 2 — таблица и свойства; 3 — сравнение; 4 — следование; 5 — вариант 1; 0 — выход")
+        print("\n1 — значение; 2 — таблица и свойства; 3 — сравнение; 4 — следование; 5 — вариант 1; 6 — аксиомы ЛР1; 0 — выход")
         try:
             choice = input("Режим> ").strip()
             if choice == "0":
@@ -104,8 +115,11 @@ def interactive():
             if choice == "5":
                 show_variant()
                 continue
+            if choice == "6":
+                show_axioms()
+                continue
             if choice not in {"1", "2", "3", "4"}:
-                print("Выберите режим от 0 до 5.")
+                print("Выберите режим от 0 до 6.")
                 continue
             if choice == "4":
                 texts = input("Посылки через ; (пусто — без посылок)> ").strip()
@@ -144,13 +158,14 @@ def argument_parser():
         else:
             p.add_argument("--logic", default="C2")
         if command in ("eval", "compare"):
-            p.add_argument("--values", nargs="+", required=command == "eval")
+            p.add_argument("--values", nargs="+")
     p = commands.add_parser("entail")
     p.add_argument("conclusion")
     p.add_argument("--premise", action="append", default=[])
     p.add_argument("--logic", default="C2")
     p.add_argument("--table", action="store_true")
     commands.add_parser("variant")
+    commands.add_parser("axioms")
     p = commands.add_parser("report")
     p.add_argument("--output", type=Path)
     return parser
@@ -170,6 +185,8 @@ def main(argv=None):
                 print("Отчёт сохранён: " + str(args.output))
         elif args.command == "variant":
             show_variant()
+        elif args.command == "axioms":
+            show_axioms()
         elif args.command == "entail":
             show_entailment(tuple(map(parse_formula, args.premise)), parse_formula(args.conclusion),
                             get_logic(args.logic), args.table)
@@ -177,7 +194,7 @@ def main(argv=None):
             formula = parse_formula(args.formula)
             if args.command == "eval":
                 system = get_logic(args.logic)
-                assignment = parse_assignments(args.values)
+                assignment = parse_assignments(args.values or [])
                 print(f"{system.code}: {format_formula(formula)} = {format_value(evaluate(formula, assignment, system))}")
             elif args.command == "table":
                 show_analysis(formula, get_logic(args.logic))

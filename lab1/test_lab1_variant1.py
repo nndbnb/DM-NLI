@@ -9,6 +9,7 @@ from lab1_variant1 import (
     ProofVerifier,
     find_beta,
     formula_to_string,
+    match_axiom_schema,
     parse_formula,
 )
 
@@ -100,8 +101,113 @@ class BetaTests(unittest.TestCase):
         self.assertEqual(result, ("p", parse_formula("p⊃q")))
 
 
+class AxiomSchemaTests(unittest.TestCase):
+    A1 = parse_formula("p⊃(q⊃p)")
+    A2 = parse_formula("(s⊃(p⊃q))⊃((s⊃p)⊃(s⊃q))")
+    A3 = parse_formula("((p⊃f)⊃f)⊃p")
+
+    def test_two_independent_variable_masks(self):
+        result = match_axiom_schema(self.A1, parse_formula("r⊃(s⊃r)"))
+        self.assertEqual(result, {"p": Variable("r"), "q": Variable("s")})
+
+    def test_two_compound_subtrees(self):
+        result = match_axiom_schema(self.A1, parse_formula("(r⊃s)⊃((t⊃f)⊃(r⊃s))"))
+        self.assertEqual(result, {"p": parse_formula("r⊃s"), "q": parse_formula("t⊃f")})
+
+    def test_same_tree_for_distinct_masks_is_allowed(self):
+        result = match_axiom_schema(self.A1, parse_formula("x⊃(x⊃x)"))
+        self.assertEqual(result, {"p": Variable("x"), "q": Variable("x")})
+
+    def test_false_can_fill_a_variable_mask(self):
+        self.assertIsNotNone(match_axiom_schema(self.A1, parse_formula("f⊃(f⊃f)")))
+        self.assertIsNotNone(match_axiom_schema(self.A3, parse_formula("((f⊃f)⊃f)⊃f")))
+
+    def test_swapping_names_is_not_recursive_substitution(self):
+        result = match_axiom_schema(self.A1, parse_formula("q⊃(p⊃q)"))
+        self.assertEqual(result, {"p": Variable("q"), "q": Variable("p")})
+
+    def test_original_name_can_occur_inside_binding(self):
+        result = match_axiom_schema(self.A1, parse_formula("(p⊃q)⊃(p⊃(p⊃q))"))
+        self.assertEqual(result, {"p": parse_formula("p⊃q"), "q": Variable("p")})
+
+    def test_repeated_mask_requires_equal_subtrees(self):
+        for text in ["r⊃(s⊃t)", "(a⊃b)⊃(s⊃(a⊃c))", "r⊃(s⊃(r⊃r))"]:
+            with self.subTest(text=text):
+                self.assertIsNone(match_axiom_schema(self.A1, parse_formula(text)))
+
+    def test_implication_nodes_are_fixed(self):
+        for text in ["p", "f", "p⊃q", "(p⊃q)⊃p"]:
+            with self.subTest(text=text):
+                self.assertIsNone(match_axiom_schema(self.A1, parse_formula(text)))
+
+    def test_a2_repeated_masks(self):
+        text = "((a⊃b)⊃(c⊃d))⊃(((a⊃b)⊃c)⊃((a⊃b)⊃d))"
+        self.assertEqual(match_axiom_schema(self.A2, parse_formula(text)),
+                         {"s": parse_formula("a⊃b"), "p": Variable("c"), "q": Variable("d")})
+        verifier = ProofVerifier()
+        self.assertEqual(verifier.find_axiom(parse_formula(text)), "A2")
+
+    def test_a2_inconsistent_s_p_and_q_are_rejected(self):
+        for text in [
+            "((a⊃b)⊃(c⊃d))⊃(((a⊃b)⊃c)⊃(e⊃d))",
+            "((a⊃b)⊃(c⊃d))⊃(((a⊃b)⊃e)⊃((a⊃b)⊃d))",
+            "((a⊃b)⊃(c⊃d))⊃(((a⊃b)⊃c)⊃((a⊃b)⊃e))",
+        ]:
+            with self.subTest(text=text):
+                self.assertIsNone(match_axiom_schema(self.A2, parse_formula(text)))
+                self.assertIsNone(ProofVerifier().find_axiom(parse_formula(text)))
+
+    def test_a3_compound_mask(self):
+        text = "(((a⊃b)⊃f)⊃f)⊃(a⊃b)"
+        self.assertEqual(match_axiom_schema(self.A3, parse_formula(text)), {"p": parse_formula("a⊃b")})
+        self.assertEqual(ProofVerifier().find_axiom(parse_formula(text)), "A3")
+
+    def test_false_in_a3_is_not_a_mask(self):
+        for text in ["((p⊃x)⊃x)⊃p", "((p⊃f)⊃x)⊃p", "((p⊃x)⊃f)⊃p"]:
+            with self.subTest(text=text):
+                self.assertIsNone(match_axiom_schema(self.A3, parse_formula(text)))
+
+    def test_empty_binding_map_is_still_a_success(self):
+        self.assertEqual(match_axiom_schema(parse_formula("f"), parse_formula("f")), {})
+        self.assertIsNone(match_axiom_schema(parse_formula("f"), parse_formula("p")))
+
+    def test_bindings_do_not_leak_between_calls_or_schemas(self):
+        self.assertIsNone(match_axiom_schema(self.A1, parse_formula("x⊃(y⊃z)")))
+        self.assertIsNotNone(match_axiom_schema(self.A1, parse_formula("r⊃(s⊃r)")))
+        self.assertEqual(ProofVerifier().find_axiom(parse_formula("((r⊃f)⊃f)⊃r")), "A3")
+
+    def test_generated_instances_and_their_semantics(self):
+        # Независимое построение экземпляров по структурным операциям.
+        # Для каждого из 155 экземпляров проверяется истинность на всех оценках.
+        atoms = ["a", "b", "f", "(a⊃b)", "(b⊃a)"]
+        examples = []
+        for a, b in product(atoms, repeat=2):
+            examples.append(("A1", f"{a}⊃({b}⊃{a})"))
+        for s, p, q in product(atoms, repeat=3):
+            examples.append(("A2", f"({s}⊃({p}⊃{q}))⊃(({s}⊃{p})⊃({s}⊃{q}))"))
+        for a in atoms:
+            examples.append(("A3", f"(({a}⊃f)⊃f)⊃{a}"))
+        self.assertEqual(len(examples), 155)
+
+        def evaluate(node, values):
+            if isinstance(node, Variable):
+                return values[node.name]
+            if isinstance(node, FalseConst):
+                return False
+            return not evaluate(node.left, values) or evaluate(node.right, values)
+
+        for name, text in examples:
+            with self.subTest(schema=name, formula=text):
+                formula = parse_formula(text)
+                schema = dict(ProofVerifier().axioms)[name]
+                self.assertIsNotNone(match_axiom_schema(schema, formula))
+                self.assertTrue(ProofVerifier().verify(text)[0])
+                for a, b in product([False, True], repeat=2):
+                    self.assertTrue(evaluate(formula, {"a": a, "b": b}))
+
+
 class VerifierTests(unittest.TestCase):
-    def test_axiom_beta_mp_chain(self):
+    def test_axiom_schema_mp_chain(self):
         verifier = ProofVerifier()
 
         ok, _ = verifier.verify("p⊃(q⊃p)")
@@ -111,7 +217,8 @@ class VerifierTests(unittest.TestCase):
             "(p⊃(q⊃p))⊃(q⊃(p⊃(q⊃p)))"
         )
         self.assertTrue(ok)
-        self.assertIn("β", msg)
+        self.assertIn("схемы аксиомы A1", msg)
+        self.assertNotIn("по правилу β", msg)
 
         ok, msg = verifier.verify("q⊃(p⊃(q⊃p))")
         self.assertTrue(ok)
@@ -119,10 +226,41 @@ class VerifierTests(unittest.TestCase):
 
     def test_axiom_is_available_before_first_line(self):
         verifier = ProofVerifier()
-        ok, msg = verifier.verify("r⊃(q⊃r)")
+        ok, msg = verifier.verify("r⊃(s⊃r)")
         self.assertTrue(ok)
-        self.assertIn("β", msg)
-        self.assertIn("аксиомы A1", verifier.proof[0].reason)
+        self.assertIn("схемы аксиомы A1", msg)
+        self.assertEqual(verifier.proof[0].reason, "аксиома A1")
+
+    def test_beta_still_applies_to_non_axiom_theorems(self):
+        verifier = ProofVerifier()
+        for text in [
+            "s⊃((s⊃s)⊃s)",
+            "(s⊃((s⊃s)⊃s))⊃((s⊃(s⊃s))⊃(s⊃s))",
+            "(s⊃(s⊃s))⊃(s⊃s)",
+            "s⊃(s⊃s)",
+            "s⊃s",
+        ]:
+            self.assertTrue(verifier.verify(text)[0], text)
+        ok, message = verifier.verify("r⊃r")
+        self.assertTrue(ok)
+        self.assertIn("по правилу β", message)
+        self.assertIsNone(verifier.find_axiom(parse_formula("r⊃r")))
+
+    def test_beta_of_non_axiom_remains_atomic(self):
+        verifier = ProofVerifier()
+        self.assertTrue(verifier.verify("(p⊃(q⊃p))⊃(q⊃(p⊃(q⊃p)))")[0])
+        self.assertTrue(verifier.verify("q⊃(p⊃(q⊃p))")[0])
+        target = "s⊃(r⊃(s⊃r))"
+        self.assertFalse(verifier.verify(target)[0])
+        self.assertIn("по правилу β", verifier.verify("q⊃(r⊃(q⊃r))")[1])
+        self.assertIn("по правилу β", verifier.verify(target)[1])
+
+    def test_invalid_schema_instance_does_not_change_history(self):
+        verifier = ProofVerifier()
+        self.assertTrue(verifier.verify("r⊃(s⊃r)")[0])
+        previous = verifier.proof.copy()
+        self.assertFalse(verifier.verify("r⊃(s⊃t)")[0])
+        self.assertEqual(verifier.proof, previous)
 
     def test_mp_can_use_axiom_without_explicit_input(self):
         verifier = ProofVerifier()
