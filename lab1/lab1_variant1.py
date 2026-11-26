@@ -369,6 +369,25 @@ def match_axiom_schema(
     return bindings if match(schema, formula) else None
 
 
+def instantiate_axiom_schema(
+    schema: Formula, bindings: dict[str, Formula]
+) -> Optional[Formula]:
+    """Собирает экземпляр без повторной подстановки внутри привязок масок.
+
+    Непривязанная маска означает, что ограничения не определили экземпляр.
+    Её нельзя молча считать конкретной переменной с тем же именем.
+    """
+    if isinstance(schema, Variable):
+        return bindings.get(schema.name)
+    if isinstance(schema, FalseConst):
+        return FALSE
+    children = [instantiate_axiom_schema(child, bindings)
+                for child in formula_children(schema)]
+    if any(child is None for child in children):
+        return None
+    return type(schema)(*children)
+
+
 # ============================================================
 # 6. Верификатор доказательства
 # ============================================================
@@ -399,7 +418,8 @@ class ProofVerifier:
         self.proof: list[ProofLine] = []
 
     def all_sources(self) -> list[SourceRef]:
-        # По условию лабораторной доступны аксиомы и предыдущие формулы.
+        # Конечные явно заданные источники для MP и β.
+        # Остальные экземпляры схем для MP строятся по цели в find_mp().
         # Новая проверяемая формула ещё не входит в источники вывода.
         axioms = [
             SourceRef(formula, f"аксиомы {name}") for name, formula in self.axioms
@@ -425,6 +445,17 @@ class ProofVerifier:
         for source in sources:
             by_formula.setdefault(source.formula, source)
 
+        def available(formula: Formula) -> Optional[SourceRef]:
+            source = by_formula.get(formula)
+            if source is not None:
+                return source
+            name = self.find_axiom(formula)
+            if name is not None:
+                return SourceRef(formula, f"экземпляра схемы аксиомы {name}")
+            return None
+
+        # Сохраняем предпочтение уже имеющихся посылок и обоснований.
+        # Меньшая посылка также может быть не введённым экземпляром схемы.
         for implication_source in sources:
             formula = implication_source.formula
             if not isinstance(formula, Implication):
@@ -432,9 +463,27 @@ class ProofVerifier:
             if formula.right != target:
                 continue
 
-            antecedent_source = by_formula.get(formula.left)
+            antecedent_source = available(formula.left)
             if antecedent_source is not None:
                 return implication_source, antecedent_source
+
+        # У всех схем варианта 1 каждая маска встречается в консеквенте.
+        # Сопоставление с целью однозначно задаёт нужный экземпляр большей
+        # посылки: бесконечный перебор аксиом и поиск многошагового вывода
+        # не нужны. Посылки не добавляются в историю автоматически.
+        for name, schema in self.axioms:
+            if not isinstance(schema, Implication):
+                continue
+            bindings = match_axiom_schema(schema.right, target)
+            if bindings is None:
+                continue
+            implication = instantiate_axiom_schema(schema, bindings)
+            if not isinstance(implication, Implication):
+                continue
+            antecedent_source = available(implication.left)
+            if antecedent_source is not None:
+                return (SourceRef(implication, f"экземпляра схемы аксиомы {name}"),
+                        antecedent_source)
 
         return None
 
@@ -527,14 +576,15 @@ class ProofVerifier:
             )
         else:
             mp_detail = (
-                "Для modus ponens нет доступной импликации с заключением "
+                "Для modus ponens не найдены обе посылки A⊃B и A с заключением "
                 f"{formula_to_string(formula)}."
             )
         return False, (
-            f"Формула {formula_to_string(formula)} является ППФ. "
-            "Недостаточно данных для принятия этого шага: формула не является "
-            "экземпляром схем аксиом и не получается одной β-подстановкой из доступных формул. "
-            + mp_detail
+            f"Формула {formula_to_string(formula)} является ППФ (синтаксис корректен).\n"
+            "Шаг не принят: не найдено обоснование схемой аксиомы, modus ponens "
+            "или одной β-подстановкой.\n"
+            + mp_detail + "\n"
+            "Проверяется один шаг. Отказ не означает ошибку ППФ или отсутствие полного доказательства."
         )
 
     def _append(self, formula: Formula, reason: str) -> None:
@@ -590,6 +640,7 @@ HELP = """Команды:
 Аксиомы доступны для MP и β с начала сеанса.
 Переменные в схемах аксиом — маски для произвольных поддеревьев.
 Повтор одной маски требует одинакового дерева. Константа f не является маской.
+Для MP доступны также не введённые экземпляры схем аксиом в обеих посылках.
 Соответствие схеме аксиомы проверяется раньше MP и β.
 Проверяется только один шаг, а не существование полного доказательства.
 Повтор формулы не добавляет строку. clear удаляет ранее введённые шаги.

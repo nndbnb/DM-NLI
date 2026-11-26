@@ -248,11 +248,18 @@ class VerifierTests(unittest.TestCase):
 
     def test_beta_of_non_axiom_remains_atomic(self):
         verifier = ProofVerifier()
-        self.assertTrue(verifier.verify("(p⊃(q⊃p))⊃(q⊃(p⊃(q⊃p)))")[0])
-        self.assertTrue(verifier.verify("q⊃(p⊃(q⊃p))")[0])
-        target = "s⊃(r⊃(s⊃r))"
+        for text in [
+            "p⊃((p⊃p)⊃p)",
+            "(p⊃((p⊃p)⊃p))⊃((p⊃(p⊃p))⊃(p⊃p))",
+            "(p⊃(p⊃p))⊃(p⊃p)",
+            "p⊃(p⊃p)",
+            "p⊃p",
+            "q⊃(p⊃p)",
+        ]:
+            self.assertTrue(verifier.verify(text)[0], text)
+        target = "s⊃(r⊃r)"
         self.assertFalse(verifier.verify(target)[0])
-        self.assertIn("по правилу β", verifier.verify("q⊃(r⊃(q⊃r))")[1])
+        self.assertIn("по правилу β", verifier.verify("q⊃(r⊃r)")[1])
         self.assertIn("по правилу β", verifier.verify(target)[1])
 
     def test_invalid_schema_instance_does_not_change_history(self):
@@ -323,7 +330,7 @@ class DiagnosticAndLimitTests(unittest.TestCase):
     def test_missing_mp_implication_is_reported(self):
         ok, message = ProofVerifier().verify("s⊃s")
         self.assertFalse(ok)
-        self.assertIn("нет доступной импликации с заключением s⊃s.", message)
+        self.assertIn("не найдены обе посылки A⊃B и A с заключением s⊃s.", message)
 
     def test_nesting_limit_boundary_is_valid(self):
         self.assertEqual(parse_formula("(" * 100 + "p" + ")" * 100), parse_formula("p"))

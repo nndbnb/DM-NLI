@@ -81,6 +81,28 @@ class SharedFoundationTests(unittest.TestCase):
         self.assertEqual(logic.evaluate(formula, {"r": Fraction(1, 2), "s": Fraction(1)}, logic.get_logic("K3")), Fraction(1, 2))
         self.assertEqual(logic.evaluate(formula, {"r": Fraction(1, 2), "s": Fraction(1)}, logic.get_logic("L3")), 1)
 
+    def test_mp_with_implicit_axioms_uses_the_same_tree_in_lab2(self):
+        verifier = lab1.ProofVerifier()
+        self.assertTrue(verifier.verify("f⊃f⊃(r->(s->r))")[0])
+        formula = verifier.proof[0].formula
+        self.assertEqual(formula, logic.parse_formula("(f->f)->(r->(s->r))"))
+        self.assertTrue(logic.analyze(formula, logic.get_logic("C2")).valid)
+        self.assertFalse(logic.analyze(formula, logic.get_logic("K3")).valid)
+        self.assertTrue(logic.analyze(formula, logic.get_logic("L3")).valid)
+
+    def test_a3_does_not_entail_the_false_screenshot_variant(self):
+        verifier = lab1.ProofVerifier()
+        source = "r->(s->p)⊃f⊃f⊃(r->(s->p))"
+        target = "f⊃f⊃(r->(s->p))"
+        self.assertTrue(verifier.verify(source)[0])
+        self.assertFalse(verifier.verify(target)[0])
+        values = {"r": Fraction(1), "s": Fraction(1), "p": Fraction(0)}
+        system = logic.get_logic("C2")
+        self.assertEqual(logic.evaluate(verifier.proof[0].formula, values, system), 1)
+        self.assertEqual(logic.evaluate(logic.parse_formula(target), values, system), 0)
+        self.assertFalse(logic.check_entailment((verifier.proof[0].formula,),
+                                               logic.parse_formula(target), system).entails)
+
     def test_schema_masks_accept_extended_subtrees(self):
         formula = logic.parse_formula("(a∧b)→(¬c→(a∧b))")
         verifier = lab1.ProofVerifier()
